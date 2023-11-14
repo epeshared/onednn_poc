@@ -9,7 +9,6 @@ using dt = memory::data_type;
 memory src_mem;
 memory dst_mem;
 memory weights_mem;
-memory ret_mem;
 
 inner_product_forward inner_product_prim;
 std::unordered_map<int, memory> inner_product_args;
@@ -17,17 +16,11 @@ std::unordered_map<int, memory> inner_product_args;
 dnnl::engine cpu_engine(dnnl::engine::kind::cpu, 0);
 dnnl::stream engine_stream(cpu_engine);
 
-void init_onednn(uint32_t DIM) {
-  const memory::dim N = 1, // batch size
-          IC = 1, // input channels
-          IH = DIM, // tensor height
-          IW = DIM, // tensor width
-          OC = 1; // output channels
-
-  memory::desc src_md({DIM, DIM}, memory::data_type::s8, memory::format_tag::ab);
-  memory::desc inner_product_weights_md({DIM, DIM}, memory::data_type::s8, memory::format_tag::ab);
-  memory::desc dst_md({DIM, DIM}, memory::data_type::s32, memory::format_tag::ab);
-  memory::desc ret_md({DIM, 1}, memory::data_type::s32, memory::format_tag::ab);
+void init_onednn_inner_product(uint32_t xrow, uint32_t xcol, uint32_t yrow, uint32_t ycol) {
+  memory::desc src_md({xrow, xcol}, memory::data_type::s8, memory::format_tag::ab);
+  // memory::desc inner_product_weights_md({ycol, yrow}, memory::data_type::s8, memory::format_tag::ab);
+  memory::desc inner_product_weights_md({yrow, ycol}, memory::data_type::s8, {ycol, 1});
+  memory::desc dst_md({xrow, ycol}, memory::data_type::s32, memory::format_tag::ab);
 
   // Create inner product primitive descriptor.
   inner_product_forward::primitive_desc inner_product_pd = inner_product_forward::primitive_desc(
@@ -38,12 +31,9 @@ void init_onednn(uint32_t DIM) {
   src_mem = memory(src_md, cpu_engine, NULL);
   dst_mem = memory(dst_md, cpu_engine, NULL);
   weights_mem = memory(inner_product_weights_md, cpu_engine, NULL);
-  ret_mem = memory(ret_md, cpu_engine, NULL);
  
   inner_product_prim = inner_product_forward(inner_product_pd);
 
-  // Primitive arguments.
-  
   inner_product_args.insert({DNNL_ARG_SRC, src_mem});
   inner_product_args.insert({DNNL_ARG_WEIGHTS, weights_mem});
   inner_product_args.insert({DNNL_ARG_DST, dst_mem});          
@@ -76,51 +66,65 @@ int32_t fvec_inner_product(int8_t* x, int8_t* y, size_t d) {
     return res;
 }
 
-int main(int argc, char **argv){
+// #define VERIFY 1
+// #define OMP_TEST 1
+#define ONEDNN_TEST 1
+#define PERFORMANCE_TEST 1
+
+int main(int argc, char **argv) {
   uint32_t DIM = 1024;
-  uint32_t loop = 10;
-  int8_t* x = (int8_t*)malloc(DIM * DIM * sizeof(int8_t));
-  int8_t* y = (int8_t*)malloc(DIM * DIM * sizeof(int8_t));
-  int32_t* ret2 = (int32_t*)malloc(DIM * DIM * sizeof(int32_t));
-  int32_t* ret1 = (int32_t*)malloc(DIM * DIM * sizeof(int32_t));
+
+  uint32_t xrow = 1024;
+  uint32_t xcol = DIM;
+
+  uint32_t yrow = DIM;
+  uint32_t ycol = 1024;
+
+  uint32_t loop = 1000;
+  int8_t* x = (int8_t*)malloc(xrow * xcol * sizeof(int8_t));
+  int8_t* y = (int8_t*)malloc(yrow * ycol * sizeof(int8_t));
+  int32_t* ret2 = (int32_t*)malloc(xrow * ycol * sizeof(int32_t));
+  int32_t* ret1 = (int32_t*)malloc(xrow * ycol * sizeof(int32_t));
 
   srand(time(NULL));
   uint32_t i,j;
   int8_t* x_i;
   int8_t* y_j;   
 
-  for (i = 0; i < DIM*DIM; i++) x[i] = (int8_t)rand() % 256 - 128;
-  for (i = 0; i < DIM*DIM; i++) y[i] = (int8_t)rand() % 256 - 128;
-  for (i = 0; i < DIM*DIM; i++) ret2[i] = 0;
-  for (i = 0; i < DIM*DIM; i++) ret1[i] = 0;
+  for (i = 0; i < xrow * xcol; i++) x[i] = (int8_t)rand() % 256 - 128;
+  for (i = 0; i < yrow * ycol; i++) y[i] = (int8_t)rand() % 256 - 128;
+  for (i = 0; i < xrow * ycol; i++) ret2[i] = 0;
+  for (i = 0; i < xrow * ycol; i++) ret1[i] = 0;
 
 
   struct timeval start, end;
-  // int32_t ret1[DIM][DIM];
-  // int32_t ret2[DIM][DIM];
+  long seconds, microseconds;
+  double elapsed;
 
+#ifdef OMP_TEST
   gettimeofday(&start, NULL);
 #pragma omp parallel num_threads(144)
 #pragma omp for
   for (uint32_t k = 0 ; k < loop;k++) { 
-    for (i = 0; i < DIM; i++) {
+    for (i = 0; i < xrow; i++) {
       x_i = x + i*DIM;
-      for (j = 0; j < DIM; j++) {
+      for (j = 0; j < ycol; j++) {
         y_j = y + j*DIM;
         ret1[i*DIM + j] = fvec_inner_product(x_i,y_j, DIM);
-        // printf("i:%d %d ",i,ret[i]);
       }
     }
   }
+
   gettimeofday(&end, NULL);
   printf("\n");
-  long seconds = end.tv_sec - start.tv_sec;
-  long microseconds = end.tv_usec - start.tv_usec;
-  double elapsed = seconds + microseconds*1e-6;
+  seconds = end.tv_sec - start.tv_sec;
+  microseconds = end.tv_usec - start.tv_usec;
+  elapsed = seconds + microseconds*1e-6;
   printf("Function Scalar took %f seconds to execute.\n", elapsed);
-  
-  
-  init_onednn(DIM);
+#endif  
+
+#ifdef ONEDNN_TEST  
+  init_onednn_inner_product(xrow, xcol, yrow, ycol);
   gettimeofday(&start, NULL);
   for (uint32_t k = 0 ; k < loop;k++) {
     inner_product_dnn(x, y, ret2, src_mem, weights_mem, dst_mem, engine_stream, 
@@ -128,15 +132,20 @@ int main(int argc, char **argv){
   }   
   gettimeofday(&end, NULL);
   printf("\n");
-  for (i = 0; i < DIM*DIM; i++) {
+  seconds = end.tv_sec - start.tv_sec;
+  microseconds = end.tv_usec - start.tv_usec;
+  elapsed = seconds + microseconds*1e-6;
+  printf("Function DNN took %f seconds to execute.\n", elapsed);  
+#endif
+
+#ifdef VERIFY
+  for (i = 0; i < xrow*ycol; i++) {
     if (ret2[i] != ret1[i]) {
       printf("the %d element is not equal\n");
     }
     break;  
-  }    
+  }
+#endif    
 
-  seconds = end.tv_sec - start.tv_sec;
-  microseconds = end.tv_usec - start.tv_usec;
-  elapsed = seconds + microseconds*1e-6;
-  printf("Function DNN took %f seconds to execute.\n", elapsed);
+
 }
