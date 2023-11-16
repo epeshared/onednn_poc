@@ -49,6 +49,7 @@ int32_t inner_product_dnn(int8_t* x, int8_t* y, int32_t* z,
     y_mem.set_data_handle(y);
     dst_mem.set_data_handle(z);
 
+    dnnl::set_max_cpu_isa(dnnl::cpu_isa::avx512_core_amx);
     inner_product_prim.execute(engine_stream, inner_product_args);
 
     // Wait for the computation to finalize.

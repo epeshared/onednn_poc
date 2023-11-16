@@ -1,79 +1,150 @@
 #include <immintrin.h>
 #include <random>
 #include <sys/time.h>
+#include <cassert>
 #include "oneapi/dnnl/dnnl.hpp"
 
-static dnnl::memory int8_mem;
-static dnnl::memory float_mem;
+dnnl::engine eng(dnnl::engine::kind::cpu, 0);
 
-static dnnl::engine cpu_engine(dnnl::engine::kind::cpu, 0);
-static dnnl::stream engine_stream(cpu_engine);
+void init_vector(float* v, float min_value, float max_value, size_t size) {
+    std::mt19937 gen;
+    std::uniform_real_distribution<float> u(min_value, max_value);
 
-static dnnl::memory _scale_m;
-static dnnl::memory zp_m;
-static dnnl::reorder::primitive_desc q10n_pd;
-
-void init_data(float *v, float min_value, float max_value, size_t size, float init_val = 0.0f) {
-    if (init_val == 0.0f) {
-        for (size_t i = 0; i < size; i++)
-            v[i] = init_val;
-    } else {
-        std::mt19937 gen;
-        std::uniform_real_distribution<float> u(min_value, max_value);        
-        for (size_t i = 0; i < size; i++)
-            v[i] = u(gen);
-    }
-
+    for (int i = 0; i < size; i++)
+        v[i] = u(gen);
 }
 
-static void init_onednn_q10n(int64_t row, int64_t col, float scale, int32_t zp) {
-    dnnl::memory::desc float_md({row, col}, dnnl::memory::data_type::s8, dnnl::memory::format_tag::ab);
-    float_mem = dnnl::memory(float_md, cpu_engine, NULL); 
+// void f32_matmul_compute(int64_t M, int64_t N, int64_t K,
+//         const std::vector<float> &A_f32, const std::vector<float> &B_f32,
+//         std::vector<float> &C_f32) {
+//     // Initialize memory descriptors that describes matrices in Row-Major format
+//     dnnl::memory::desc a_md({M, K}, dnnl::memory::data_type::f32, {K, 1});
 
-    dnnl::memory::desc int8_md({row, col}, dnnl::memory::data_type::s8, dnnl::memory::format_tag::ab);
-    int8_mem = dnnl::memory(int8_md, cpu_engine, NULL);
+//     // Wrap raw pointers into oneDNN memory objects
+//     dnnl::memory A_f32_m(a_md, eng, (void *)A_f32.data());
+
+//     // Create a MatMul primitive
+//     dnnl::matmul::primitive_desc matmul_pd(eng, a_md, b_md, c_md);
+//     dnnl::matmul matmul_p(matmul_pd);
+
+//     dnnl::stream s(eng);
+//     matmul_p.execute(s,
+//             {{DNNL_ARG_SRC, A_f32_m}, {DNNL_ARG_WEIGHTS, B_f32_m},
+//                     {DNNL_ARG_DST, C_f32_m}});
+//     s.wait();
+// }
+
+template <typename T>
+void find_min_max(T* v,size_t size, float &min_value, float &max_value) {
+    min_value = max_value = v[0];
+    for (int i = 0;i< size; i++) {        
+        min_value = std::min<float>(min_value, v[i]);
+        max_value = std::max<float>(max_value, v[i]);
+    }
+}
+
+template <typename T>
+void compute_q10n_params(const char *message, float* v, size_t size,
+        float &scale, int32_t &zp) {
+    // Find property of T integer type
+    // Simple trick to improve accuracy: shrink the range a little bit
+    float max_int = (float)std::numeric_limits<T>::max() - 1;
+    float min_int = (float)std::numeric_limits<T>::lowest() + 1;
+
+#ifndef OMIT_WORKAROUND_FOR_SKX
+    // Read more in CPU / Section 1 here:
+    // https://oneapi-src.github.io/oneDNN/dev_guide_int8_computations.html
+    if (std::is_same<T, uint8_t>::value) max_int /= 2;
+#endif
+
+    // Find min and max value in array
+    float min_val = v[0], max_val = v[0];
+    find_min_max(v, size, min_val, max_val);
+
+    // Compute appropriate scale
+    scale = (max_val - min_val) / (max_int - min_int);
+
+    // Compute appropriate offset
+    if (std::is_same<T, int8_t>::value)
+        zp = 0;
+    else
+        zp = (int32_t)(max_int - max_val / scale);
+    printf("\tComputing q10n params for %s\n"
+           "\t\tData type: %s\n"
+           "\t\tScale:%.3g (inverse scale:%.3g)\n"
+           "\t\tZero point:%d\n\n",
+            message, std::is_same<T, int8_t>::value ? "int8_t" : "uint8_t",
+            scale, 1 / scale, zp);
+}
+
+void quantize(float* X_f32, float scale_X, int32_t zp_X,
+        dnnl::memory &X_int_m) {
+    using dt = dnnl::memory::data_type;
+
+    dnnl::stream s(eng);
+
+    dnnl::memory::desc x_int_md = X_int_m.get_desc();
+    const auto &dims = x_int_md.get_dims();
+
+    dnnl::memory::desc x_f32_md({dims[0], dims[1]}, dt::f32, {dims[1], 1});
+    dnnl::memory X_f32_m(x_f32_md, eng, (void *)X_f32);
 
     dnnl::primitive_attr q10n_attr;
     q10n_attr.set_scales_mask(DNNL_ARG_DST, /* mask */ 0);
     q10n_attr.set_zero_points_mask(DNNL_ARG_DST, /* mask */ 0);
 
-    dnnl::reorder::primitive_desc q10n_pd(cpu_engine, float_md, cpu_engine, int8_md, q10n_attr);
-    _scale_m = dnnl::memory({{1}, dnnl::memory::data_type::f32, {1}}, cpu_engine, &scale);
-    zp_m = dnnl::memory({{1}, dnnl::memory::data_type::s32, {1}}, cpu_engine, &zp);
+    dnnl::reorder::primitive_desc q10n_pd(eng, x_f32_md, eng, x_int_md, q10n_attr);
+    dnnl::memory dst_scale_X_m({{1}, dt::f32, {1}}, eng, &scale_X);
+    dnnl::memory zp_X_m({{1}, dt::s32, {1}}, eng, &zp_X);
+    dnnl::reorder(q10n_pd).execute(s,
+            {{DNNL_ARG_SRC, X_f32_m}, {DNNL_ARG_DST, X_int_m},
+                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_DST, dst_scale_X_m},
+                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_DST, zp_X_m}});
 
+    s.wait();
 }
 
-void quantinzation(int8_t* _int_data, float* _float_data, dnnl::primitive_attr q10n_attr) {
-    
-    int8_mem.set_data_handle(_int_data);
-    float_mem.set_data_handle(_float_data);
+void print_f32(float* X_f32, size_t row, size_t col) {
+    for (size_t i = 0; i < row*col; i++) {
+        printf("%.6f ", X_f32[i]);
+    }
+    printf("\n");
+}
 
-    dnnl::reorder(q10n_pd).execute(engine_stream,
-            {{DNNL_ARG_SRC, float_mem}, {DNNL_ARG_DST, int8_mem},
-                    {DNNL_ARG_ATTR_SCALES | DNNL_ARG_DST, _scale_m},
-                    {DNNL_ARG_ATTR_ZERO_POINTS | DNNL_ARG_DST, zp_m}});
-
-    engine_stream.wait();
+void print_s8(int8_t* X_s8, size_t row, size_t col) {
+    for (size_t i = 0; i < row*col; i++) {
+        printf("%d ", X_s8[i]);
+    }
+    printf("\n");
 }
 
 int main() {
-    const int64_t row_a = 10, col_a = 20;
-    const int64_t row_b = col_a, col_b = 30;
-    const int64_t row_c = row_a, col_c = col_b;
-
-    float *A_f32, *B_f32, *C_f32;  
+    const int64_t M = 10, N = 20, K = 30;
 
     // Data distribution for matrices A and B
     const float param_A_min_val = -2.f;
     const float param_A_max_val = 1.4f;
 
-    const float param_B_min_val = -1.f;
-    const float param_B_max_val = -param_B_min_val; // B is centered around 0      
+    const float threshold_dynamic_q10n = 3 * 1e-2f;    
 
-    A_f32 = (float*)malloc(row_a * col_a * sizeof(float));
-    B_f32 = (float*)malloc(row_b * col_b * sizeof(float)); 
-    C_f32 = (float*)malloc(row_c * col_c * sizeof(float));  
+    dnnl::stream s(eng);
 
-    init_data(A_f32, param_A_min_val, param_A_max_val, row_a*col_a);  
-    init_data(B_f32, param_B_min_val, param_B_max_val, row_b*col_b);  
+    float scale_A, scale_B;
+    int32_t zp_A, zp_B;
+
+    size_t size_a_f32 = M * N;
+    float* A_f32 = (float*)malloc(size_a_f32*sizeof(float));
+    init_vector(A_f32, param_A_min_val, param_A_max_val, M*N);
+    print_f32(A_f32, M, N);
+
+    // We compute q10n parameters here, but in the real world applications for
+    // inputs these parameters are transferred from the previous layers
+    compute_q10n_params<int8_t>("A", A_f32, size_a_f32, scale_A, zp_A);
+    assert(zp_B == 0 && "for int8 q10n we assume zero point = 0");
+
+    std::vector<int8_t> A_u8(M * K, 0);
+    dnnl::memory::desc a_u8_md({M, K}, dnnl::memory::data_type::s8, {K, 1});
+    dnnl::memory A_u8_m(a_u8_md, eng, (void *)A_u8.data());
+    quantize(A_f32, scale_A, zp_A, A_u8_m);
+    print_s8(A_u8.data(), M, N);
 }

@@ -1,7 +1,7 @@
 CFLAG = -Wall -g -lrt -ldnnl -fopenmp -O2 -march=native -fno-strict-aliasing
 CC = g++
 BIN = test_inner_product
-CFILES =fvec_inner_product.cpp 
+CFILES =inner_product.cpp 
 
 all:
 	$(CC) $(CFLAG) $(CFILES) -o $(BIN) $(LIBS)
