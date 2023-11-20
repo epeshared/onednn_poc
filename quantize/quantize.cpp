@@ -120,31 +120,52 @@ void print_s8(int8_t* X_s8, size_t row, size_t col) {
 
 int main() {
     const int64_t M = 10, N = 20, K = 30;
+    dnnl::stream s(eng);
+    const float threshold_dynamic_q10n = 3 * 1e-2f;   
 
     // Data distribution for matrices A and B
-    const float param_A_min_val = -2.f;
-    const float param_A_max_val = 1.4f;
+    // const float param_A_min_val = -2.f;
+    // const float param_A_max_val = 1.4f;
 
-    const float threshold_dynamic_q10n = 3 * 1e-2f;    
+    const float param_int8_min_val = -1.f;
+    const float param_int8_max_val = -param_int8_min_val; // B is centered around 0    
 
-    dnnl::stream s(eng);
+    float scale_A;
+    int32_t zp_A;
 
-    float scale_A, scale_B;
-    int32_t zp_A, zp_B;
-
-    size_t size_a_f32 = M * N;
+    size_t size_a_f32 = M * K;
     float* A_f32 = (float*)malloc(size_a_f32*sizeof(float));
-    init_vector(A_f32, param_A_min_val, param_A_max_val, M*N);
-    print_f32(A_f32, M, N);
+    init_vector(A_f32, param_int8_min_val, param_int8_max_val, size_a_f32);
+    // print_f32(A_f32, M, N);
 
     // We compute q10n parameters here, but in the real world applications for
     // inputs these parameters are transferred from the previous layers
     compute_q10n_params<int8_t>("A", A_f32, size_a_f32, scale_A, zp_A);
-    assert(zp_B == 0 && "for int8 q10n we assume zero point = 0");
+    assert(zp_A == 0 && "for int8 q10n we assume zero point = 0");
 
     std::vector<int8_t> A_u8(M * K, 0);
     dnnl::memory::desc a_u8_md({M, K}, dnnl::memory::data_type::s8, {K, 1});
     dnnl::memory A_u8_m(a_u8_md, eng, (void *)A_u8.data());
     quantize(A_f32, scale_A, zp_A, A_u8_m);
-    print_s8(A_u8.data(), M, N);
+    // print_s8(A_u8.data(), M, N);
+
+
+
+    float scale_B;
+    int32_t zp_B;
+
+    size_t size_b_f32 = K * N;
+    float* B_f32 = (float*)malloc(size_a_f32*sizeof(float));
+    init_vector(B_f32, param_int8_min_val, param_int8_max_val, size_b_f32);
+    // print_f32(B_f32, M, N);
+
+    // We compute q10n parameters here, but in the real world applications for
+    // inputs these parameters are transferred from the previous layers
+    compute_q10n_params<int8_t>("B", B_f32, size_b_f32, scale_B, zp_B);
+    assert(zp_B == 0 && "for int8 q10n we assume zero point = 0");
+
+    std::vector<int8_t> B_u8(M * K, 0);
+    dnnl::memory::desc b_u8_md({M, K}, dnnl::memory::data_type::s8, {K, 1});
+    dnnl::memory B_u8_m(b_u8_md, eng, (void *)B_u8.data());
+    quantize(B_f32, scale_B, zp_B, B_u8_m);  
 }
