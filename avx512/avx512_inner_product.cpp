@@ -67,7 +67,7 @@ int main(int argc, char **argv){
   uint32_t yrow = 10;
   uint32_t ycol = DIM;
  
-  uint32_t loop = 1000000;
+  uint32_t loop = 100000;
   float *x = (float *)malloc(xrow * xcol * sizeof(float));
   float *y = (float *)malloc(yrow * ycol * sizeof(float));
   float *ret2 = (float *)malloc(xrow * yrow * sizeof(float));
@@ -149,7 +149,9 @@ int main(int argc, char **argv){
  
 #ifdef AVX512_TEST
   gettimeofday(&start, NULL);
+// #pragma omp parallel num_threads(144)
   for (uint32_t k = 0; k < loop; k++) {
+// #pragma omp for   
     for (i = 0; i < xrow; i++) {
       x_i = x + i * DIM;
       for (j = 0; j < yrow; j++) {

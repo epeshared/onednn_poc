@@ -69,15 +69,23 @@ void comput_f32bf16f32(uint32_t xrow, uint32_t xcol, uint32_t yrow, uint32_t yco
  
   printf("comput_f32bf16f32 finished\n");
 }
+
+float fvec_inner_product(const float* x, const float* y, size_t d) {
+    float res = 0.F;
+    for (size_t i = 0; i != d; ++i) {
+        res += x[i] * y[i];
+    }
+    return res;
+}
  
 int main(int argc, char **argv)
 {
-  uint32_t DIM = 1024;
+  uint32_t DIM = 128;
  
-  uint32_t xrow = 64;
+  uint32_t xrow = 1;
   uint32_t xcol = DIM;
  
-  uint32_t yrow = 100;
+  uint32_t yrow = 100000;
   uint32_t ycol = DIM;
  
   uint32_t loop = 1;

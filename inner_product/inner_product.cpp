@@ -12,12 +12,12 @@ memory weights_mem;
  
 // inner_product_forward inner_product_prim;
 // std::unordered_map<int, memory> inner_product_args;
- 
+
 void init_onednn_inner_product(uint32_t xrow, uint32_t xcol, uint32_t yrow, uint32_t ycol, engine &cpu_engine,
                                inner_product_forward &inner_product_prim, inner_product_forward::primitive_desc &inner_product_pd)
 {
-  memory::desc src_md({xrow, xcol}, memory::data_type::s8, memory::format_tag::ab);
-  memory::desc inner_product_weights_md({yrow, ycol}, memory::data_type::s8, memory::format_tag::AB16b32a4b);
+  memory::desc src_md({xrow, xcol}, memory::data_type::s8, memory::format_tag::any);
+  memory::desc inner_product_weights_md({yrow, ycol}, memory::data_type::s8, memory::format_tag::any);
   memory::desc dst_md({xrow, yrow}, memory::data_type::s32, memory::format_tag::ab);
  
   // Create inner product primitive descriptor.
@@ -28,6 +28,22 @@ void init_onednn_inner_product(uint32_t xrow, uint32_t xcol, uint32_t yrow, uint
  
   inner_product_prim = inner_product_forward(inner_product_pd);
 }
+ 
+// void init_onednn_inner_product(uint32_t xrow, uint32_t xcol, uint32_t yrow, uint32_t ycol, engine &cpu_engine,
+//                                inner_product_forward &inner_product_prim, inner_product_forward::primitive_desc &inner_product_pd)
+// {
+//   memory::desc src_md({xrow, xcol}, memory::data_type::s8, memory::format_tag::ab);
+//   memory::desc inner_product_weights_md({yrow, ycol}, memory::data_type::s8, memory::format_tag::AB16b32a4b);
+//   memory::desc dst_md({xrow, yrow}, memory::data_type::s32, memory::format_tag::ab);
+ 
+//   // Create inner product primitive descriptor.
+//   inner_product_pd = inner_product_forward::primitive_desc(
+//       cpu_engine,
+//       prop_kind::forward_training,
+//       src_md, inner_product_weights_md, dst_md);
+ 
+//   inner_product_prim = inner_product_forward(inner_product_pd);
+// }
  
 int32_t inner_product_dnn(int8_t *x, int8_t *y, int32_t *z,
                           engine &cpu_engine,
@@ -108,13 +124,13 @@ int main(int argc, char **argv)
 {
   uint32_t DIM = atoi(argv[1]);
  
-  uint32_t xrow = 2;
+  uint32_t xrow = 1;
   uint32_t xcol = DIM;
  
-  uint32_t yrow = 2;
+  uint32_t yrow = 1000000;
   uint32_t ycol = DIM;
  
-  uint32_t loop = 1;
+  uint32_t loop = 100;
   int8_t *x = (int8_t *)malloc(xrow * xcol * sizeof(int8_t));
   int8_t *y = (int8_t *)malloc(yrow * ycol * sizeof(int8_t));
   int32_t *ret2 = (int32_t *)malloc(xrow * yrow * sizeof(int32_t));
@@ -134,11 +150,11 @@ int main(int argc, char **argv)
   for (i = 0; i < xrow * yrow; i++)
     ret1[i] = 0;
  
-  printf("----------- matrix x -----------------------\n");
-  print_s8(x, xrow, xcol);
+  // printf("----------- matrix x -----------------------\n");
+  // print_s8(x, xrow, xcol);
  
-  printf("----------- matrix y -----------------------\n");
-  print_s8(y, yrow, ycol);
+  // printf("----------- matrix y -----------------------\n");
+  // print_s8(y, yrow, ycol);
  
   struct timeval start, end;
   long seconds, microseconds;
@@ -162,8 +178,8 @@ int main(int argc, char **argv)
   }
  
   gettimeofday(&end, NULL);
-  printf("----------- scalar result -----------------------\n");
-  print_s32(ret1, xrow, yrow);
+  // printf("----------- scalar result -----------------------\n");
+  // print_s32(ret1, xrow, yrow);
   seconds = end.tv_sec - start.tv_sec;
   microseconds = end.tv_usec - start.tv_usec;
   elapsed = seconds + microseconds * 1e-6;
@@ -171,26 +187,26 @@ int main(int argc, char **argv)
   printf("\n");
 #endif
  
-  for (uint32_t i = 0; i < xrow; i++)
-  {
-    for (uint32_t j = 0; j < yrow; j++)
-    {
-      ret1[i * yrow + j] = 0;
-    }
-  }
+  // for (uint32_t i = 0; i < xrow; i++)
+  // {
+  //   for (uint32_t j = 0; j < yrow; j++)
+  //   {
+  //     ret1[i * yrow + j] = 0;
+  //   }
+  // }
  
-  for (uint32_t i = 0; i < xrow; i++)
-  {
-    for (uint32_t j = 0; j < yrow; j++)
-    {
-      for (uint32_t k = 0; k < xcol; k++)
-      {
-        ret1[i * yrow + j] += x[i * xcol + k] * y[j * xcol + k];
-      }
-    }
-  }
-  printf("----------- default scalar result -----------------------\n");
-  print_s32(ret1, xrow, yrow);
+  // for (uint32_t i = 0; i < xrow; i++)
+  // {
+  //   for (uint32_t j = 0; j < yrow; j++)
+  //   {
+  //     for (uint32_t k = 0; k < xcol; k++)
+  //     {
+  //       ret1[i * yrow + j] += x[i * xcol + k] * y[j * xcol + k];
+  //     }
+  //   }
+  // }
+  // printf("----------- default scalar result -----------------------\n");
+  // print_s32(ret1, xrow, yrow);
  
 #ifdef ONEDNN_TEST
   dnnl::engine cpu_engine(dnnl::engine::kind::cpu, 0);
@@ -206,8 +222,8 @@ int main(int argc, char **argv)
     // creat_onednn_inner_product(xrow, xcol, yrow, ycol, x, y, ret2, engine_stream, inner_product_prim, inner_product_pd);
   }
   gettimeofday(&end, NULL);
-  printf("----------- dnnl result -----------------------\n");
-  print_s32(ret2, xrow, yrow);
+  // printf("----------- dnnl result -----------------------\n");
+  // print_s32(ret2, xrow, yrow);
   seconds = end.tv_sec - start.tv_sec;
   microseconds = end.tv_usec - start.tv_usec;
   elapsed = seconds + microseconds * 1e-6;
